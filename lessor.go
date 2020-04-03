@@ -55,7 +55,7 @@ func run() error {
 		nodeURL             string
 		generatingAccountSK string
 		lessorSK            string
-		lessorAddress       string
+		lessorPK            string
 		irreducibleBalance  int64
 		dryRun              bool
 		testRun             bool
@@ -65,7 +65,7 @@ func run() error {
 	flag.StringVar(&nodeURL, "node-api", "http://localhost:6869", "Node's REST API URL")
 	flag.StringVar(&generatingAccountSK, "generating-sk", "", "Base58 encoded private key of generating account")
 	flag.StringVar(&lessorSK, "lessor-sk", "", "Base58 encoded private key of lessor")
-	flag.StringVar(&lessorAddress, "lessor-address", "", "Base58 encoded account's address of lessor")
+	flag.StringVar(&lessorPK, "lessor-pk", "", "Base58 encoded lessor's public key")
 	flag.Int64Var(&irreducibleBalance, "irreducible-balance", 0, "Irreducible balance on generating account in WAVELETS")
 	flag.BoolVar(&dryRun, "dry-run", false, "Test execution without creating real transactions on blockchain")
 	flag.BoolVar(&testRun, "test-run", false, "Test execution with limited available balance of 1 WAVES")
@@ -93,8 +93,8 @@ func run() error {
 		log.Printf("[ERROR] Invalid lessor private key '%s'", lessorSK)
 		return errInvalidParameters
 	}
-	if lessorAddress == "" || len(strings.Fields(lessorAddress)) > 1 {
-		log.Print("[INFO] No different lessor address is given")
+	if lessorPK == "" || len(strings.Fields(lessorPK)) > 1 {
+		log.Print("[INFO] No different lessor public key is given")
 	}
 	if irreducibleBalance < 0 {
 		log.Printf("[ERROR] Invalid irreducible balance value '%d'", irreducibleBalance)
@@ -146,14 +146,19 @@ func run() error {
 		log.Printf("[ERROR] Failed to parse lessor private key: %v", err)
 		return errFailure
 	}
-	log.Printf("[INFO] Lessor public key: %s", lPK.String())
-	if lessorAddress != "" {
-		lAddr, err = proto.NewAddressFromString(lessorAddress)
+	if lessorPK != "" {
+		lPK, err = crypto.NewPublicKeyFromBase58(lessorPK)
 		if err != nil {
-			log.Printf("[ERROR] Failed to parse lessor address: %v", err)
-			return errInvalidParameters
+			log.Printf("[ERROR] Failed to parse additional lessor public key: %v", err)
+			return errFailure
+		}
+		lAddr, err = proto.NewAddressFromPublicKey(scheme, lPK)
+		if err != nil {
+			log.Printf("[ERROR] Failed to parce lessor address: %v", err)
+			return errFailure
 		}
 	}
+	log.Printf("[INFO] Lessor public key: %s", lPK.String())
 	log.Printf("[INFO] Lessor address: %s", lAddr.String())
 
 	// 4. Check WAVES balance on generating address
