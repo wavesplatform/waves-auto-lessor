@@ -33,6 +33,10 @@ var (
 	na                   = proto.OptionalAsset{}
 )
 
+type AddressesExtraFee struct {
+	ExtraFee uint64 `json:"extraFee"`
+}
+
 func main() {
 	err := run()
 	if err != nil {
@@ -328,11 +332,19 @@ func getWavesBalance(ctx context.Context, cl *client.Client, addr proto.Address)
 }
 
 func getExtraFee(ctx context.Context, cl *client.Client, addr proto.Address) (uint64, error) {
-	r, _, err := cl.Addresses.ScriptInfo(ctx, addr)
+	req, err := http.NewRequest("GET", fmt.Sprintf("%s/addresses/scriptInfo/%s", cl.GetOptions().BaseUrl, addr.String()), nil)
 	if err != nil {
 		return 0, err
 	}
-	return r.ExtraFee, nil
+	extraFee := new(AddressesExtraFee)
+	r, err := cl.Do(ctx, req, extraFee)
+	if err != nil {
+		return 0, err
+	}
+	if r.StatusCode != http.StatusOK {
+		return 0, errors.New("failed to get extra fee")
+	}
+	return extraFee.ExtraFee, nil
 }
 
 func nodeClient(ctx context.Context, s string) (*client.Client, error) {
