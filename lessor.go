@@ -6,16 +6,17 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"github.com/oguzbilgic/fpd"
-	"github.com/wavesplatform/gowaves/pkg/client"
-	"github.com/wavesplatform/gowaves/pkg/crypto"
-	"github.com/wavesplatform/gowaves/pkg/proto"
 	"log"
 	"net/http"
 	"net/url"
 	"os"
 	"strings"
 	"time"
+
+	"github.com/oguzbilgic/fpd"
+	"github.com/wavesplatform/gowaves/pkg/client"
+	"github.com/wavesplatform/gowaves/pkg/crypto"
+	"github.com/wavesplatform/gowaves/pkg/proto"
 )
 
 const (
@@ -32,10 +33,6 @@ var (
 	errFailure           = errors.New("operation failure")
 	na                   = proto.OptionalAsset{}
 )
-
-type AddressesExtraFee struct {
-	ExtraFee uint64 `json:"extraFee"`
-}
 
 func main() {
 	err := run()
@@ -209,8 +206,8 @@ func run() error {
 	}
 	fee := standardFee + transferExtraFee
 	amount := balance - fee
-	transfer := proto.NewUnsignedTransferV2(gPK, na, na, timestamp(), amount, fee, rcp, "")
-	err = transfer.Sign(gSK)
+	transfer := proto.NewUnsignedTransferWithSig(gPK, na, na, timestamp(), amount, fee, rcp, nil)
+	err = transfer.Sign(scheme, gSK)
 	if err != nil {
 		log.Printf("[ERROR] Failed to sign transfer transaction: %v", err)
 		return errFailure
@@ -259,8 +256,8 @@ func run() error {
 	}
 	fee = standardFee + leaseExtraFee
 	amount = amount - fee
-	lease := proto.NewUnsignedLeaseV2(lPK, rcp, amount, fee, timestamp())
-	err = lease.Sign(lSK)
+	lease := proto.NewUnsignedLeaseWithSig(lPK, rcp, amount, fee, timestamp())
+	err = lease.Sign(scheme, lSK)
 	if err != nil {
 		log.Printf("[ERROR] Failed to sign lease transaction: %v", err)
 		return errFailure
@@ -332,19 +329,11 @@ func getWavesBalance(ctx context.Context, cl *client.Client, addr proto.Address)
 }
 
 func getExtraFee(ctx context.Context, cl *client.Client, addr proto.Address) (uint64, error) {
-	req, err := http.NewRequest("GET", fmt.Sprintf("%s/addresses/scriptInfo/%s", cl.GetOptions().BaseUrl, addr.String()), nil)
+	info, _, err := cl.Addresses.ScriptInfo(ctx, addr)
 	if err != nil {
 		return 0, err
 	}
-	extraFee := new(AddressesExtraFee)
-	r, err := cl.Do(ctx, req, extraFee)
-	if err != nil {
-		return 0, err
-	}
-	if r.StatusCode != http.StatusOK {
-		return 0, errors.New("failed to get extra fee")
-	}
-	return extraFee.ExtraFee, nil
+	return info.ExtraFee, nil
 }
 
 func nodeClient(ctx context.Context, s string) (*client.Client, error) {
