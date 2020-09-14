@@ -191,8 +191,8 @@ func run() error {
 	log.Printf("[INFO] Lessor public key: %s", lPK.String())
 	log.Printf("[INFO] Lessor address: %s", lAddr.String())
 
-	// 4. Check WAVES balance on generating address
-	balance, err := getWavesBalance(ctx, cl, gAddr)
+	// 4. Check available WAVES balance on generating address
+	balance, err := getAvailableWavesBalance(ctx, cl, gAddr)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			return errUserTermination
@@ -210,7 +210,7 @@ func run() error {
 		}
 	}
 	if balance <= standardFee {
-		log.Print("[ERROR] Not enough balance")
+		log.Print("[ERROR] Not enough balance on generator's account")
 		return errFailure
 	}
 	if balance > waves && testRun {
@@ -273,7 +273,7 @@ func run() error {
 	}
 
 	// 6. Check WAVES balance on lessor's account
-	balance, err = getWavesBalance(ctx, cl, lAddr)
+	balance, err = getAvailableWavesBalance(ctx, cl, lAddr)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			return errUserTermination
@@ -291,7 +291,7 @@ func run() error {
 		}
 	}
 	if balance <= standardFee {
-		log.Print("[ERROR] Not enough balance")
+		log.Print("[ERROR] Not enough balance on lessor's account")
 		return errFailure
 	}
 	if balance > waves && testRun {
@@ -384,12 +384,12 @@ func format(amount uint64) string {
 	return fmt.Sprintf("%s WAVES", da.FormattedString())
 }
 
-func getWavesBalance(ctx context.Context, cl *client.Client, addr proto.Address) (uint64, error) {
-	ab, _, err := cl.Addresses.Balance(ctx, addr)
+func getAvailableWavesBalance(ctx context.Context, cl *client.Client, addr proto.Address) (uint64, error) {
+	ab, _, err := cl.Addresses.BalanceDetails(ctx, addr)
 	if err != nil {
 		return 0, err
 	}
-	return ab.Balance, nil
+	return ab.Available, nil
 }
 
 func getExtraFee(ctx context.Context, cl *client.Client, addr proto.Address) (uint64, error) {
