@@ -34,6 +34,22 @@ var (
 	na                   = proto.OptionalAsset{}
 )
 
+type feature struct {
+	ID               int    `json:"id"`
+	Description      string `json:"description"`
+	BlockchainStatus string `json:"blockchainStatus"`
+	NodeStatus       string `json:"nodeStatus"`
+	ActivationHeight int    `json:"activationHeight"`
+}
+
+type activationStatusResponse struct {
+	Height          int       `json:"height"`
+	VotingInterval  int       `json:"votingInterval"`
+	VotingThreshold int       `json:"votingThreshold"`
+	NextCheck       int       `json:"nextCheck"`
+	Features        []feature `json:"features"`
+}
+
 func main() {
 	err := run()
 	if err != nil {
@@ -67,7 +83,7 @@ func run() error {
 	flag.StringVar(&generatingAccountSK, "generating-sk", "", "Base58 encoded private key of generating account")
 	flag.StringVar(&lessorSK, "lessor-sk", "", "Base58 encoded private key of lessor")
 	flag.StringVar(&lessorPK, "lessor-pk", "", "Base58 encoded lessor's public key")
-	flag.Int64Var(&irreducibleBalance, "irreducible-balance", 0, "Irreducible balance on generating account in WAVELETS")
+	flag.Int64Var(&irreducibleBalance, "irreducible-balance", waves, "Irreducible balance on accounts in WAVELETS, default value is 1 Waves")
 	flag.BoolVar(&dryRun, "dry-run", false, "Test execution without creating real transactions on blockchain")
 	flag.BoolVar(&testRun, "test-run", false, "Test execution with limited available balance of 1 WAVES")
 	flag.BoolVar(&showHelp, "help", false, "Show usage information and exit")
@@ -102,7 +118,7 @@ func run() error {
 		return errInvalidParameters
 	}
 	if irreducibleBalance > 0 {
-		log.Printf("[INFO] Generating account irreducible balance set to %s", format(uint64(irreducibleBalance)))
+		log.Printf("[INFO] Accounts irreducible balance set to %s", format(uint64(irreducibleBalance)))
 	}
 	if testRun {
 		log.Printf("[INFO] TEST-RUN: Available balance will be limited to %s", format(waves))
@@ -124,7 +140,7 @@ func run() error {
 	}
 	log.Printf("[INFO] Successfully connected to '%s'", cl.GetOptions().BaseUrl)
 
-	// 2. Acquire the network scheme from genesis block
+	// 2. Acquire the network scheme from genesis block and Protobuf activation status
 	scheme, err := getScheme(ctx, cl)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
@@ -134,6 +150,19 @@ func run() error {
 		return errFailure
 	}
 	log.Printf("[INFO] Blockchain scheme: %s", string(scheme))
+	protobuf, err := isProtobufActivated(ctx, cl)
+	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return errUserTermination
+		}
+		log.Printf("[ERROR] Failed to check Protobuf activation status: %v", err)
+		return errFailure
+	}
+	var txVer byte = 2
+	if protobuf {
+		txVer = 3
+	}
+	log.Printf("[INFO] Version of transactions to produce: %d", txVer)
 
 	// 3. Generate public keys and addresses from given private keys
 	gSK, gPK, gAddr, err := parseSK(scheme, generatingAccountSK)
@@ -187,7 +216,7 @@ func run() error {
 	if balance > waves && testRun {
 		balance = waves
 	}
-	log.Printf("[INFO] Available balance: %s", format(balance))
+	log.Printf("[INFO] Balance available for transfer: %s", format(balance))
 
 	// 5. Create transfer transaction to lessor account
 	rcp := proto.NewRecipientFromAddress(lAddr)
@@ -206,7 +235,11 @@ func run() error {
 	}
 	fee := standardFee + transferExtraFee
 	amount := balance - fee
-	transfer := proto.NewUnsignedTransferWithSig(gPK, na, na, timestamp(), amount, fee, rcp, nil)
+	if amount <= 0 {
+		log.Print("[ERROR] Negative of zero amount to transfer")
+		return errFailure
+	}
+	transfer := proto.NewUnsignedTransferWithProofs(txVer, gPK, na, na, timestamp(), amount, fee, rcp, nil)
 	err = transfer.Sign(scheme, gSK)
 	if err != nil {
 		log.Printf("[ERROR] Failed to sign transfer transaction: %v", err)
@@ -239,7 +272,34 @@ func run() error {
 		}
 	}
 
-	// 6. Create leasing transaction to generating account
+	// 6. Check WAVES balance on lessor's account
+	balance, err = getWavesBalance(ctx, cl, lAddr)
+	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return errUserTermination
+		}
+		log.Printf("[ERROR] Failed to get lessor account's WAVES balance: %v", err)
+		return errFailure
+	}
+	log.Printf("[INFO] Balance of lessor account '%s': %s", lAddr.String(), format(balance))
+	if irreducibleBalance > 0 {
+		b := int64(balance) - irreducibleBalance
+		if b > 0 {
+			balance = uint64(b)
+		} else {
+			balance = 0
+		}
+	}
+	if balance <= standardFee {
+		log.Print("[ERROR] Not enough balance")
+		return errFailure
+	}
+	if balance > waves && testRun {
+		balance = waves
+	}
+	log.Printf("[INFO] Balance available for leasing: %s", format(balance))
+
+	// 7. Create leasing transaction to generating account
 	rcp = proto.NewRecipientFromAddress(gAddr)
 	leaseExtraFee, err := getExtraFee(ctx, cl, lAddr)
 	if err != nil {
@@ -255,8 +315,12 @@ func run() error {
 		log.Print("[INFO] No extra fee on lease")
 	}
 	fee = standardFee + leaseExtraFee
-	amount = amount - fee
-	lease := proto.NewUnsignedLeaseWithSig(lPK, rcp, amount, fee, timestamp())
+	amount = balance - fee
+	if amount <= 0 {
+		log.Print("[ERROR] Negative of zero amount to lease")
+		return errFailure
+	}
+	lease := proto.NewUnsignedLeaseWithProofs(txVer, lPK, rcp, amount, fee, timestamp())
 	err = lease.Sign(scheme, lSK)
 	if err != nil {
 		log.Printf("[ERROR] Failed to sign lease transaction: %v", err)
@@ -370,6 +434,24 @@ func getScheme(ctx context.Context, cl *client.Client) (proto.Scheme, error) {
 		return 0, err
 	}
 	return b.Generator.Bytes()[1], nil
+}
+
+func isProtobufActivated(ctx context.Context, cl *client.Client) (bool, error) {
+	statusRequest, err := http.NewRequest("GET", cl.GetOptions().BaseUrl+"/activation/status", nil)
+	if err != nil {
+		return false, err
+	}
+	resp := new(activationStatusResponse)
+	_, err = cl.Do(ctx, statusRequest, resp)
+	if err != nil {
+		return false, err
+	}
+	for _, f := range resp.Features {
+		if f.ID == 15 && f.BlockchainStatus == "ACTIVATED" && (f.NodeStatus == "IMPLEMENTED" || f.NodeStatus == "VOTED") {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func showUsage() {
