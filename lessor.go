@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
 	"strings"
 	"time"
 
@@ -27,7 +28,6 @@ const (
 
 var (
 	version              = "v0.0.0"
-	interruptSignals     = []os.Signal{os.Interrupt}
 	errInvalidParameters = errors.New("invalid parameters")
 	errUserTermination   = errors.New("user termination")
 	errFailure           = errors.New("operation failure")
@@ -73,6 +73,7 @@ func run() error {
 		generatingAccountSK string
 		lessorSK            string
 		lessorPK            string
+		leasingAddress      string
 		irreducibleBalance  int64
 		dryRun              bool
 		testRun             bool
@@ -83,6 +84,7 @@ func run() error {
 	flag.StringVar(&generatingAccountSK, "generating-sk", "", "Base58 encoded private key of generating account")
 	flag.StringVar(&lessorSK, "lessor-sk", "", "Base58 encoded private key of lessor")
 	flag.StringVar(&lessorPK, "lessor-pk", "", "Base58 encoded lessor's public key")
+	flag.StringVar(&leasingAddress, "leasing-address", "", "Base58 encoded leasing address if differs from generating account")
 	flag.Int64Var(&irreducibleBalance, "irreducible-balance", waves, "Irreducible balance on accounts in WAVELETS, default value is 1 Waves")
 	flag.BoolVar(&dryRun, "dry-run", false, "Test execution without creating real transactions on blockchain")
 	flag.BoolVar(&testRun, "test-run", false, "Test execution with limited available balance of 1 WAVES")
@@ -110,8 +112,28 @@ func run() error {
 		log.Printf("[ERROR] Invalid lessor private key '%s'", lessorSK)
 		return errInvalidParameters
 	}
-	if lessorPK == "" || len(strings.Fields(lessorPK)) > 1 {
+	var differentLessorPK *crypto.PublicKey = nil
+	if lessorPK == "" {
+		lessorPK = ""
 		log.Print("[INFO] No different lessor public key is given")
+	} else {
+		pk, err := crypto.NewPublicKeyFromBase58(lessorPK)
+		if err != nil {
+			log.Printf("[ERROR] Failed to parse additional lessor public key'%s': %v", lessorPK, err)
+			return errFailure
+		}
+		differentLessorPK = &pk
+	}
+	var leasingAddr *proto.WavesAddress = nil
+	if leasingAddress == "" {
+		log.Printf("[INFO] No different leasing address is given")
+	} else {
+		a, err := proto.NewAddressFromString(leasingAddress)
+		if err != nil {
+			log.Printf("[ERROR] Invalid leasing address '%s': %v", leasingAddress, err)
+			return errFailure
+		}
+		leasingAddr = &a
 	}
 	if irreducibleBalance < 0 {
 		log.Printf("[ERROR] Invalid irreducible balance value '%d'", irreducibleBalance)
@@ -127,7 +149,8 @@ func run() error {
 		log.Print("[INFO] DRY-RUN: No actual transactions will be created")
 	}
 
-	ctx := interruptListener()
+	ctx, done := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer done()
 
 	// 1. Check connection to node's API
 	cl, err := nodeClient(ctx, nodeURL)
@@ -176,15 +199,11 @@ func run() error {
 		log.Printf("[ERROR] Failed to parse lessor private key: %v", err)
 		return errFailure
 	}
-	if lessorPK != "" {
-		lPK, err = crypto.NewPublicKeyFromBase58(lessorPK)
-		if err != nil {
-			log.Printf("[ERROR] Failed to parse additional lessor public key: %v", err)
-			return errFailure
-		}
+	if differentLessorPK != nil { // Override lessor's PK and address
+		lPK = *differentLessorPK
 		lAddr, err = proto.NewAddressFromPublicKey(scheme, lPK)
 		if err != nil {
-			log.Printf("[ERROR] Failed to parce lessor address: %v", err)
+			log.Printf("[ERROR] Failed to make lessor address from public key: %v", err)
 			return errFailure
 		}
 	}
@@ -301,6 +320,10 @@ func run() error {
 
 	// 7. Create leasing transaction to generating account
 	rcp = proto.NewRecipientFromAddress(gAddr)
+	if leasingAddr != nil { // If different leasing address was provided make recipient of it
+		rcp = proto.NewRecipientFromAddress(*leasingAddr)
+	}
+	log.Printf("[INFO] Leasing to address: %s", rcp.String())
 	leaseExtraFee, err := getExtraFee(ctx, cl, lAddr)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
@@ -384,7 +407,7 @@ func format(amount uint64) string {
 	return fmt.Sprintf("%s WAVES", da.FormattedString())
 }
 
-func getAvailableWavesBalance(ctx context.Context, cl *client.Client, addr proto.Address) (uint64, error) {
+func getAvailableWavesBalance(ctx context.Context, cl *client.Client, addr proto.WavesAddress) (uint64, error) {
 	ab, _, err := cl.Addresses.BalanceDetails(ctx, addr)
 	if err != nil {
 		return 0, err
@@ -392,7 +415,7 @@ func getAvailableWavesBalance(ctx context.Context, cl *client.Client, addr proto
 	return ab.Available, nil
 }
 
-func getExtraFee(ctx context.Context, cl *client.Client, addr proto.Address) (uint64, error) {
+func getExtraFee(ctx context.Context, cl *client.Client, addr proto.WavesAddress) (uint64, error) {
 	info, _, err := cl.Addresses.ScriptInfo(ctx, addr)
 	if err != nil {
 		return 0, err
@@ -459,15 +482,15 @@ func showUsage() {
 	flag.PrintDefaults()
 }
 
-func parseSK(scheme proto.Scheme, s string) (crypto.SecretKey, crypto.PublicKey, proto.Address, error) {
+func parseSK(scheme proto.Scheme, s string) (crypto.SecretKey, crypto.PublicKey, proto.WavesAddress, error) {
 	sk, err := crypto.NewSecretKeyFromBase58(s)
 	if err != nil {
-		return crypto.SecretKey{}, crypto.PublicKey{}, proto.Address{}, err
+		return crypto.SecretKey{}, crypto.PublicKey{}, proto.WavesAddress{}, err
 	}
 	pk := crypto.GeneratePublicKey(sk)
 	address, err := proto.NewAddressFromPublicKey(scheme, pk)
 	if err != nil {
-		return crypto.SecretKey{}, crypto.PublicKey{}, proto.Address{}, err
+		return crypto.SecretKey{}, crypto.PublicKey{}, proto.WavesAddress{}, err
 	}
 	return sk, pk, address, nil
 }
