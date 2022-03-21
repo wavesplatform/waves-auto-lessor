@@ -73,6 +73,7 @@ func run() error {
 		generatingAccountSK string
 		lessorSK            string
 		lessorPK            string
+		leasingAddress      string
 		irreducibleBalance  int64
 		dryRun              bool
 		testRun             bool
@@ -83,6 +84,7 @@ func run() error {
 	flag.StringVar(&generatingAccountSK, "generating-sk", "", "Base58 encoded private key of generating account")
 	flag.StringVar(&lessorSK, "lessor-sk", "", "Base58 encoded private key of lessor")
 	flag.StringVar(&lessorPK, "lessor-pk", "", "Base58 encoded lessor's public key")
+	flag.StringVar(&leasingAddress, "leasing-address", "", "Base58 encoded leasing address if differs from generating account")
 	flag.Int64Var(&irreducibleBalance, "irreducible-balance", waves, "Irreducible balance on accounts in WAVELETS, default value is 1 Waves")
 	flag.BoolVar(&dryRun, "dry-run", false, "Test execution without creating real transactions on blockchain")
 	flag.BoolVar(&testRun, "test-run", false, "Test execution with limited available balance of 1 WAVES")
@@ -111,7 +113,12 @@ func run() error {
 		return errInvalidParameters
 	}
 	if lessorPK == "" || len(strings.Fields(lessorPK)) > 1 {
+		lessorPK = ""
 		log.Print("[INFO] No different lessor public key is given")
+	}
+	if leasingAddress == "" || len(strings.Fields(leasingAddress)) > 1 {
+		leasingAddress = ""
+		log.Printf("[INFO] No different leasing address is given")
 	}
 	if irreducibleBalance < 0 {
 		log.Printf("[ERROR] Invalid irreducible balance value '%d'", irreducibleBalance)
@@ -302,6 +309,15 @@ func run() error {
 
 	// 7. Create leasing transaction to generating account
 	rcp = proto.NewRecipientFromAddress(gAddr)
+	if leasingAddress != "" { // If different leasing address was provided make recipient of it
+		a, err := proto.NewAddressFromString(leasingAddress)
+		if err != nil {
+			log.Printf("[ERROR] Invalid leasing address: %v", err)
+			return errFailure
+		}
+		rcp = proto.NewRecipientFromAddress(a)
+	}
+	log.Printf("[INFO] Leasing to address: %s", rcp.String())
 	leaseExtraFee, err := getExtraFee(ctx, cl, lAddr)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
