@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
 	"strings"
 	"time"
 
@@ -27,7 +28,6 @@ const (
 
 var (
 	version              = "v0.0.0"
-	interruptSignals     = []os.Signal{os.Interrupt}
 	errInvalidParameters = errors.New("invalid parameters")
 	errUserTermination   = errors.New("user termination")
 	errFailure           = errors.New("operation failure")
@@ -127,7 +127,8 @@ func run() error {
 		log.Print("[INFO] DRY-RUN: No actual transactions will be created")
 	}
 
-	ctx := interruptListener()
+	ctx, done := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer done()
 
 	// 1. Check connection to node's API
 	cl, err := nodeClient(ctx, nodeURL)
@@ -384,7 +385,7 @@ func format(amount uint64) string {
 	return fmt.Sprintf("%s WAVES", da.FormattedString())
 }
 
-func getAvailableWavesBalance(ctx context.Context, cl *client.Client, addr proto.Address) (uint64, error) {
+func getAvailableWavesBalance(ctx context.Context, cl *client.Client, addr proto.WavesAddress) (uint64, error) {
 	ab, _, err := cl.Addresses.BalanceDetails(ctx, addr)
 	if err != nil {
 		return 0, err
@@ -392,7 +393,7 @@ func getAvailableWavesBalance(ctx context.Context, cl *client.Client, addr proto
 	return ab.Available, nil
 }
 
-func getExtraFee(ctx context.Context, cl *client.Client, addr proto.Address) (uint64, error) {
+func getExtraFee(ctx context.Context, cl *client.Client, addr proto.WavesAddress) (uint64, error) {
 	info, _, err := cl.Addresses.ScriptInfo(ctx, addr)
 	if err != nil {
 		return 0, err
@@ -459,15 +460,15 @@ func showUsage() {
 	flag.PrintDefaults()
 }
 
-func parseSK(scheme proto.Scheme, s string) (crypto.SecretKey, crypto.PublicKey, proto.Address, error) {
+func parseSK(scheme proto.Scheme, s string) (crypto.SecretKey, crypto.PublicKey, proto.WavesAddress, error) {
 	sk, err := crypto.NewSecretKeyFromBase58(s)
 	if err != nil {
-		return crypto.SecretKey{}, crypto.PublicKey{}, proto.Address{}, err
+		return crypto.SecretKey{}, crypto.PublicKey{}, proto.WavesAddress{}, err
 	}
 	pk := crypto.GeneratePublicKey(sk)
 	address, err := proto.NewAddressFromPublicKey(scheme, pk)
 	if err != nil {
-		return crypto.SecretKey{}, crypto.PublicKey{}, proto.Address{}, err
+		return crypto.SecretKey{}, crypto.PublicKey{}, proto.WavesAddress{}, err
 	}
 	return sk, pk, address, nil
 }
