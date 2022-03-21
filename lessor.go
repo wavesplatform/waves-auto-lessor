@@ -112,13 +112,28 @@ func run() error {
 		log.Printf("[ERROR] Invalid lessor private key '%s'", lessorSK)
 		return errInvalidParameters
 	}
-	if lessorPK == "" || len(strings.Fields(lessorPK)) > 1 {
+	var differentLessorPK *crypto.PublicKey = nil
+	if lessorPK == "" {
 		lessorPK = ""
 		log.Print("[INFO] No different lessor public key is given")
+	} else {
+		pk, err := crypto.NewPublicKeyFromBase58(lessorPK)
+		if err != nil {
+			log.Printf("[ERROR] Failed to parse additional lessor public key'%s': %v", lessorPK, err)
+			return errFailure
+		}
+		differentLessorPK = &pk
 	}
-	if leasingAddress == "" || len(strings.Fields(leasingAddress)) > 1 {
-		leasingAddress = ""
+	var leasingAddr *proto.WavesAddress = nil
+	if leasingAddress == "" {
 		log.Printf("[INFO] No different leasing address is given")
+	} else {
+		a, err := proto.NewAddressFromString(leasingAddress)
+		if err != nil {
+			log.Printf("[ERROR] Invalid leasing address '%s': %v", leasingAddress, err)
+			return errFailure
+		}
+		leasingAddr = &a
 	}
 	if irreducibleBalance < 0 {
 		log.Printf("[ERROR] Invalid irreducible balance value '%d'", irreducibleBalance)
@@ -184,15 +199,11 @@ func run() error {
 		log.Printf("[ERROR] Failed to parse lessor private key: %v", err)
 		return errFailure
 	}
-	if lessorPK != "" {
-		lPK, err = crypto.NewPublicKeyFromBase58(lessorPK)
-		if err != nil {
-			log.Printf("[ERROR] Failed to parse additional lessor public key: %v", err)
-			return errFailure
-		}
+	if differentLessorPK != nil { // Override lessor's PK and address
+		lPK = *differentLessorPK
 		lAddr, err = proto.NewAddressFromPublicKey(scheme, lPK)
 		if err != nil {
-			log.Printf("[ERROR] Failed to parce lessor address: %v", err)
+			log.Printf("[ERROR] Failed to make lessor address from public key: %v", err)
 			return errFailure
 		}
 	}
@@ -309,13 +320,8 @@ func run() error {
 
 	// 7. Create leasing transaction to generating account
 	rcp = proto.NewRecipientFromAddress(gAddr)
-	if leasingAddress != "" { // If different leasing address was provided make recipient of it
-		a, err := proto.NewAddressFromString(leasingAddress)
-		if err != nil {
-			log.Printf("[ERROR] Invalid leasing address: %v", err)
-			return errFailure
-		}
-		rcp = proto.NewRecipientFromAddress(a)
+	if leasingAddr != nil { // If different leasing address was provided make recipient of it
+		rcp = proto.NewRecipientFromAddress(*leasingAddr)
 	}
 	log.Printf("[INFO] Leasing to address: %s", rcp.String())
 	leaseExtraFee, err := getExtraFee(ctx, cl, lAddr)
