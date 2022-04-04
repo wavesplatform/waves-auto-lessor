@@ -75,6 +75,7 @@ func run() error {
 		lessorPK            string
 		leasingAddress      string
 		irreducibleBalance  int64
+		leasingThreshold    int64
 		dryRun              bool
 		testRun             bool
 		showHelp            bool
@@ -86,6 +87,7 @@ func run() error {
 	flag.StringVar(&lessorPK, "lessor-pk", "", "Base58 encoded lessor's public key")
 	flag.StringVar(&leasingAddress, "leasing-address", "", "Base58 encoded leasing address if differs from generating account")
 	flag.Int64Var(&irreducibleBalance, "irreducible-balance", waves, "Irreducible balance on accounts in WAVELETS, default value is 1 Waves")
+	flag.Int64Var(&leasingThreshold, "leasing-threshold", 0, "Leasing amount threshold in WAVELETS, a leasing transaction created only if amount is bigger than the given value")
 	flag.BoolVar(&dryRun, "dry-run", false, "Test execution without creating real transactions on blockchain")
 	flag.BoolVar(&testRun, "test-run", false, "Test execution with limited available balance of 1 WAVES")
 	flag.BoolVar(&showHelp, "help", false, "Show usage information and exit")
@@ -342,6 +344,12 @@ func run() error {
 	if amount <= 0 {
 		log.Print("[ERROR] Negative of zero amount to lease")
 		return errFailure
+	}
+	if leasingThreshold > 0 {
+		if amount < uint64(leasingThreshold) {
+			log.Printf("[INFO] Leasing amount %d is less than threshold %d", amount, leasingThreshold)
+			return nil
+		}
 	}
 	lease := proto.NewUnsignedLeaseWithProofs(txVer, lPK, rcp, amount, fee, timestamp())
 	err = lease.Sign(scheme, lSK)
