@@ -281,6 +281,7 @@ func run() error {
 	var (
 		transferRecipient account
 		lessor            account
+		leasingRecipient  account
 	)
 	if transferOnly {
 		transferRecipient = accountFromAddress(transferRecipientAddress)
@@ -301,7 +302,7 @@ func run() error {
 		}
 		transferRecipient = lessor
 
-		leasingRecipient := generator
+		leasingRecipient = generator
 		if leasingAddr != nil { // If different leasing address was provided make recipient of it
 			leasingRecipient = accountFromAddress(*leasingAddr)
 		}
