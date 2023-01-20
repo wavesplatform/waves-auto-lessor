@@ -300,15 +300,15 @@ func run() error {
 			}
 		}
 		transferRecipient = lessor
+
+		leasingRecipient := generator
+		if leasingAddr != nil { // If different leasing address was provided make recipient of it
+			leasingRecipient = accountFromAddress(*leasingAddr)
+		}
 		log.Printf("[INFO] Lessor address: %s", lessor.String())
 		log.Printf("[INFO] Lessor public key: %s", lessor.pk.String())
+		log.Printf("[INFO] Leasing to address: %s", leasingRecipient.String())
 	}
-
-	leasingRecipient := generator
-	if leasingAddr != nil { // If different leasing address was provided make recipient of it
-		leasingRecipient = accountFromAddress(*leasingAddr)
-	}
-	log.Printf("[INFO] Leasing to address: %s", leasingRecipient.String())
 
 	// 4. Check available WAVES balance on generating address
 	balance, err := getAvailableWavesBalance(ctx, cl, generator.addr)
