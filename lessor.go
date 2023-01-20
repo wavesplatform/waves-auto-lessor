@@ -50,6 +50,49 @@ type activationStatusResponse struct {
 	Features        []feature `json:"features"`
 }
 
+type account struct {
+	sk   crypto.SecretKey
+	pk   crypto.PublicKey
+	addr proto.WavesAddress
+}
+
+func (a *account) recipient() proto.Recipient {
+	return proto.NewRecipientFromAddress(a.addr)
+}
+
+func (a *account) String() string {
+	return a.addr.String()
+}
+
+func accountFromSK(sk crypto.SecretKey, scheme byte) (account, error) {
+	pk := crypto.GeneratePublicKey(sk)
+	a, err := proto.NewAddressFromPublicKey(scheme, pk)
+	if err != nil {
+		return account{}, err
+	}
+	return account{
+		sk:   sk,
+		pk:   pk,
+		addr: a,
+	}, nil
+}
+
+func accountFromSKAndDifferentPK(sk crypto.SecretKey, pk crypto.PublicKey, scheme byte) (account, error) {
+	a, err := proto.NewAddressFromPublicKey(scheme, pk)
+	if err != nil {
+		return account{}, err
+	}
+	return account{
+		sk:   sk,
+		pk:   pk,
+		addr: a,
+	}, nil
+}
+
+func accountFromAddress(addr proto.WavesAddress) account {
+	return account{addr: addr}
+}
+
 func main() {
 	err := run()
 	if err != nil {
@@ -69,22 +112,26 @@ func main() {
 
 func run() error {
 	var (
-		nodeURL             string
-		generatingAccountSK string
-		lessorSK            string
-		lessorPK            string
-		leasingAddress      string
-		irreducibleBalance  int64
-		leasingThreshold    int64
-		dryRun              bool
-		testRun             bool
-		showHelp            bool
-		showVersion         bool
+		nodeURL            string
+		generatorSK        string
+		lessorSK           string
+		lessorPK           string
+		leasingAddress     string
+		irreducibleBalance int64
+		leasingThreshold   int64
+		transferOnly       bool
+		recipientAddress   string
+		dryRun             bool
+		testRun            bool
+		showHelp           bool
+		showVersion        bool
 	)
 	flag.StringVar(&nodeURL, "node-api", "http://localhost:6869", "Node's REST API URL")
-	flag.StringVar(&generatingAccountSK, "generating-sk", "", "Base58 encoded private key of generating account")
+	flag.StringVar(&generatorSK, "generating-sk", "", "Base58 encoded private key of generating account")
 	flag.StringVar(&lessorSK, "lessor-sk", "", "Base58 encoded private key of lessor")
 	flag.StringVar(&lessorPK, "lessor-pk", "", "Base58 encoded lessor's public key")
+	flag.BoolVar(&transferOnly, "transfer-only", false, "Do not create leasing transaction")
+	flag.StringVar(&recipientAddress, "recipient-address", "", "Base58 encoded recipient address, used in 'transfer only' mode")
 	flag.StringVar(&leasingAddress, "leasing-address", "", "Base58 encoded leasing address if differs from generating account")
 	flag.Int64Var(&irreducibleBalance, "irreducible-balance", waves, "Irreducible balance on accounts in WAVELETS, default value is 1 Waves")
 	flag.Int64Var(&leasingThreshold, "leasing-threshold", 0, "Leasing amount threshold in WAVELETS, a leasing transaction created only if amount is bigger than the given value")
@@ -102,40 +149,75 @@ func run() error {
 		fmt.Printf("Waves Automatic Lessor %s\n", version)
 		return nil
 	}
-	if nodeURL == "" || len(strings.Fields(nodeURL)) > 1 {
-		log.Printf("[ERROR] Invalid node's URL '%s'", nodeURL)
+
+	if nodeURL == "" {
+		log.Println("[ERROR] Empty node's URL. Please, provide correct URL to node.")
 		return errInvalidParameters
 	}
-	if generatingAccountSK == "" || len(strings.Fields(generatingAccountSK)) > 1 {
-		log.Printf("[ERROR] Invalid generating account private key '%s'", generatingAccountSK)
+	u, err := normalizeURL(nodeURL)
+	if err != nil {
+		log.Printf("[ERROR] Invalid node's URL '%s': %v", nodeURL, err)
+	}
+	nodeURL = u
+
+	if generatorSK == "" {
+		log.Println("[ERROR] Empty generating account private key. Please, provide the correct private key.")
 		return errInvalidParameters
 	}
-	if lessorSK == "" || len(strings.Fields(lessorSK)) > 1 {
-		log.Printf("[ERROR] Invalid lessor private key '%s'", lessorSK)
+	gSK, err := crypto.NewSecretKeyFromBase58(generatorSK)
+	if err != nil {
+		log.Printf("[ERROR] Invalid generating account private key '%s': %v", generatorSK, err)
 		return errInvalidParameters
 	}
-	var differentLessorPK *crypto.PublicKey = nil
-	if lessorPK == "" {
-		lessorPK = ""
-		log.Print("[INFO] No different lessor public key is given")
-	} else {
-		pk, err := crypto.NewPublicKeyFromBase58(lessorPK)
-		if err != nil {
-			log.Printf("[ERROR] Failed to parse additional lessor public key'%s': %v", lessorPK, err)
-			return errFailure
+	var (
+		lSK                      crypto.SecretKey
+		differentLessorPK        *crypto.PublicKey
+		leasingAddr              *proto.WavesAddress
+		transferRecipientAddress proto.WavesAddress
+	)
+	if transferOnly {
+		log.Println("[INFO] Transfer only mode activated")
+		if recipientAddress == "" {
+			log.Println("[ERROR] Empty recipient address. Please, provide the correct recipient address.")
+			return errInvalidParameters
 		}
-		differentLessorPK = &pk
-	}
-	var leasingAddr *proto.WavesAddress = nil
-	if leasingAddress == "" {
-		log.Printf("[INFO] No different leasing address is given")
-	} else {
-		a, err := proto.NewAddressFromString(leasingAddress)
+		a, err := proto.NewAddressFromString(recipientAddress)
 		if err != nil {
-			log.Printf("[ERROR] Invalid leasing address '%s': %v", leasingAddress, err)
-			return errFailure
+			log.Printf("[ERROR] Invalid transfer recipient address '%s': %v", recipientAddress, err)
+			return errInvalidParameters
 		}
-		leasingAddr = &a
+		transferRecipientAddress = a
+	} else {
+		if lessorSK == "" {
+			log.Println("[ERROR] Empty lessor private key. Please, provide correct lessor private key.")
+			return errInvalidParameters
+		}
+		var err error
+		lSK, err = crypto.NewSecretKeyFromBase58(lessorSK)
+		if err != nil {
+			log.Printf("[ERROR] Invalid lessor private key '%s': %v", lessorSK, err)
+			return errInvalidParameters
+		}
+		if lessorPK == "" {
+			log.Print("[INFO] No different lessor public key is given")
+		} else {
+			pk, err := crypto.NewPublicKeyFromBase58(lessorPK)
+			if err != nil {
+				log.Printf("[ERROR] Failed to parse additional lessor public key'%s': %v", lessorPK, err)
+				return errFailure
+			}
+			differentLessorPK = &pk
+		}
+		if leasingAddress == "" {
+			log.Printf("[INFO] No different leasing address is given")
+		} else {
+			a, err := proto.NewAddressFromString(leasingAddress)
+			if err != nil {
+				log.Printf("[ERROR] Invalid leasing address '%s': %v", leasingAddress, err)
+				return errFailure
+			}
+			leasingAddr = &a
+		}
 	}
 	if irreducibleBalance < 0 {
 		log.Printf("[ERROR] Invalid irreducible balance value '%d'", irreducibleBalance)
@@ -190,30 +272,46 @@ func run() error {
 	log.Printf("[INFO] Version of transactions to produce: %d", txVer)
 
 	// 3. Generate public keys and addresses from given private keys
-	gSK, gPK, gAddr, err := parseSK(scheme, generatingAccountSK)
+	generator, err := accountFromSK(gSK, scheme)
 	if err != nil {
-		log.Printf("[ERROR] Failed to parse generating private key: %v", err)
+		log.Printf("[ERROR] Failed to create generator's account: %v", err)
 		return errFailure
 	}
-	log.Printf("[INFO] Generating address: %s", gAddr.String())
-	lSK, lPK, lAddr, err := parseSK(scheme, lessorSK)
-	if err != nil {
-		log.Printf("[ERROR] Failed to parse lessor private key: %v", err)
-		return errFailure
-	}
-	if differentLessorPK != nil { // Override lessor's PK and address
-		lPK = *differentLessorPK
-		lAddr, err = proto.NewAddressFromPublicKey(scheme, lPK)
-		if err != nil {
-			log.Printf("[ERROR] Failed to make lessor address from public key: %v", err)
-			return errFailure
+	log.Printf("[INFO] Generating address: %s", generator.String())
+	var (
+		transferRecipient account
+		lessor            account
+	)
+	if transferOnly {
+		transferRecipient = accountFromAddress(transferRecipientAddress)
+		log.Printf("[INFO] Transfer recipient address: %s", transferRecipient.String())
+	} else {
+		if differentLessorPK != nil {
+			lessor, err = accountFromSKAndDifferentPK(lSK, *differentLessorPK, scheme)
+			if err != nil {
+				log.Printf("[ERROR] Failed to create lessor account: %v", err)
+				return errFailure
+			}
+		} else {
+			lessor, err = accountFromSK(lSK, scheme)
+			if err != nil {
+				log.Printf("[ERROR] Failed to create lessor account: %v", err)
+				return errFailure
+			}
 		}
+		transferRecipient = lessor
+		log.Printf("[INFO] Lessor address: %s", lessor.String())
+		log.Printf("[INFO] Lessor public key: %s", lessor.pk.String())
 	}
-	log.Printf("[INFO] Lessor public key: %s", lPK.String())
-	log.Printf("[INFO] Lessor address: %s", lAddr.String())
+
+	leasingRecipient := generator
+	if leasingAddr != nil { // If different leasing address was provided make recipient of it
+		leasingRecipient = accountFromAddress(*leasingAddr)
+	}
+	log.Printf("[INFO] Leasing to address: %s", leasingRecipient.String())
 
 	// 4. Check available WAVES balance on generating address
-	balance, err := getAvailableWavesBalance(ctx, cl, gAddr)
+	balance, err := getAvailableWavesBalance(ctx, cl, generator.addr)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			return errUserTermination
@@ -221,7 +319,7 @@ func run() error {
 		log.Printf("[ERROR] Failed to get generator WAVES balance: %v", err)
 		return errFailure
 	}
-	log.Printf("[INFO] Balance of generation account '%s': %s", gAddr.String(), format(balance))
+	log.Printf("[INFO] Balance of generation account '%s': %s", generator.String(), format(balance))
 	if irreducibleBalance > 0 {
 		b := int64(balance) - irreducibleBalance
 		if b > 0 {
@@ -240,13 +338,12 @@ func run() error {
 	log.Printf("[INFO] Balance available for transfer: %s", format(balance))
 
 	// 5. Create transfer transaction to lessor account
-	rcp := proto.NewRecipientFromAddress(lAddr)
-	transferExtraFee, err := getExtraFee(ctx, cl, gAddr)
+	transferExtraFee, err := getExtraFee(ctx, cl, generator.addr)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			return errUserTermination
 		}
-		log.Printf("[ERROR] Failed to check extra fee on account '%s': %v", lAddr.String(), err)
+		log.Printf("[ERROR] Failed to check extra fee on account '%s': %v", generator.String(), err)
 		return errFailure
 	}
 	if transferExtraFee != 0 {
@@ -260,8 +357,8 @@ func run() error {
 		log.Print("[ERROR] Negative of zero amount to transfer")
 		return errFailure
 	}
-	transfer := proto.NewUnsignedTransferWithProofs(txVer, gPK, na, na, timestamp(), amount, fee, rcp, nil)
-	err = transfer.Sign(scheme, gSK)
+	transfer := proto.NewUnsignedTransferWithProofs(txVer, generator.pk, na, na, timestamp(), amount, fee, transferRecipient.recipient(), nil)
+	err = transfer.Sign(scheme, generator.sk)
 	if err != nil {
 		log.Printf("[ERROR] Failed to sign transfer transaction: %v", err)
 		return errFailure
@@ -292,9 +389,13 @@ func run() error {
 			return errFailure
 		}
 	}
+	if transferOnly { // Early exit in transfer only mode
+		log.Print("[INFO] OK")
+		return nil
+	}
 
 	// 6. Check WAVES balance on lessor's account
-	balance, err = getAvailableWavesBalance(ctx, cl, lAddr)
+	balance, err = getAvailableWavesBalance(ctx, cl, lessor.addr)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			return errUserTermination
@@ -302,7 +403,7 @@ func run() error {
 		log.Printf("[ERROR] Failed to get lessor account's WAVES balance: %v", err)
 		return errFailure
 	}
-	log.Printf("[INFO] Balance of lessor account '%s': %s", lAddr.String(), format(balance))
+	log.Printf("[INFO] Balance of lessor account '%s': %s", lessor.String(), format(balance))
 	if irreducibleBalance > 0 {
 		b := int64(balance) - irreducibleBalance
 		if b > 0 {
@@ -320,18 +421,13 @@ func run() error {
 	}
 	log.Printf("[INFO] Balance available for leasing: %s", format(balance))
 
-	// 7. Create leasing transaction to generating account
-	rcp = proto.NewRecipientFromAddress(gAddr)
-	if leasingAddr != nil { // If different leasing address was provided make recipient of it
-		rcp = proto.NewRecipientFromAddress(*leasingAddr)
-	}
-	log.Printf("[INFO] Leasing to address: %s", rcp.String())
-	leaseExtraFee, err := getExtraFee(ctx, cl, lAddr)
+	// 7. Create leasing transaction
+	leaseExtraFee, err := getExtraFee(ctx, cl, lessor.addr)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			return errUserTermination
 		}
-		log.Printf("[ERROR] Failed to check extra fee on account '%s': %v", lAddr.String(), err)
+		log.Printf("[ERROR] Failed to check extra fee on account '%s': %v", lessor.String(), err)
 		return errFailure
 	}
 	if leaseExtraFee != 0 {
@@ -351,7 +447,7 @@ func run() error {
 			return nil
 		}
 	}
-	lease := proto.NewUnsignedLeaseWithProofs(txVer, lPK, rcp, amount, fee, timestamp())
+	lease := proto.NewUnsignedLeaseWithProofs(txVer, lessor.pk, leasingRecipient.recipient(), amount, fee, timestamp())
 	err = lease.Sign(scheme, lSK)
 	if err != nil {
 		log.Printf("[ERROR] Failed to sign lease transaction: %v", err)
@@ -431,6 +527,23 @@ func getExtraFee(ctx context.Context, cl *client.Client, addr proto.WavesAddress
 	return info.ExtraFee, nil
 }
 
+func normalizeURL(s string) (string, error) {
+	if !strings.Contains(s, "//") {
+		s = "//" + s
+	}
+	u, err := url.Parse(s)
+	if err != nil {
+		return "", err
+	}
+	if u.Scheme == "" {
+		u.Scheme = defaultScheme
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return "", fmt.Errorf("unsupported URL scheme '%s'", u.Scheme)
+	}
+	return u.String(), nil
+}
+
 func nodeClient(ctx context.Context, s string) (*client.Client, error) {
 	var u *url.URL
 	var err error
@@ -488,17 +601,4 @@ func isProtobufActivated(ctx context.Context, cl *client.Client) (bool, error) {
 func showUsage() {
 	_, _ = fmt.Fprintf(os.Stderr, "\nUsage of Waves Automatic Lessor %s\n", version)
 	flag.PrintDefaults()
-}
-
-func parseSK(scheme proto.Scheme, s string) (crypto.SecretKey, crypto.PublicKey, proto.WavesAddress, error) {
-	sk, err := crypto.NewSecretKeyFromBase58(s)
-	if err != nil {
-		return crypto.SecretKey{}, crypto.PublicKey{}, proto.WavesAddress{}, err
-	}
-	pk := crypto.GeneratePublicKey(sk)
-	address, err := proto.NewAddressFromPublicKey(scheme, pk)
-	if err != nil {
-		return crypto.SecretKey{}, crypto.PublicKey{}, proto.WavesAddress{}, err
-	}
-	return sk, pk, address, nil
 }
