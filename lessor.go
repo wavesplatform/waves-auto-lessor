@@ -320,7 +320,7 @@ func run() error {
 		log.Printf("[ERROR] Failed to get generator WAVES balance: %v", err)
 		return errFailure
 	}
-	log.Printf("[INFO] Balance of generation account '%s': %s", generator.String(), format(balance))
+	log.Printf("[INFO] Balance of generating account '%s': %s", generator.String(), format(balance))
 	if irreducibleBalance > 0 {
 		b := int64(balance) - irreducibleBalance
 		if b > 0 {
